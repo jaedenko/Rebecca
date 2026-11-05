@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-REBECCA - Really Exciting Borderline Ecstatic CAD Control Articulator
+REBECCA - Really Exciting Borderline Ecstatic CAD Control Articulator   (engine + command line)
 
-Hands-free inspection of a finished CAD model, or a link someone sent you.
-Hotkey-activated: the camera is OFF until you press the hotkey, and OFF again after.
+For everyday use run the tray app (rebecca_tray.py / Rebecca.exe). This module is the engine
+behind it, and also works on its own for debugging.
 
 Gestures (either hand):
   PINCH  (thumb + index)           -> ORBIT   (hold + move hand)
@@ -12,31 +12,26 @@ Gestures (either hand):
   BOTH FISTS, turn like a wheel    -> TWIST   (roll in SolidWorks, otherwise spins the model)
   OPEN HAND / no hand              -> idle    (your "lift the mouse" clutch)
 
-Hotkey:
-  toggle (default):  press <ctrl>+<alt>+r to start a session, press again to stop.
-                     A session also ends by itself after --idle-timeout seconds with no hands.
-  hold:              --mode hold --hotkey "<f8>"  -> live only while the key is held.
-                     (Use a key that isn't a modifier your app profile also presses.)
-
-In the preview window:  C = next camera   A = next app profile   SPACE = pause   Q = end session
-
 Examples:
   python rebecca.py --list-cameras
-  python rebecca.py --pick-camera
-  python rebecca.py --app onshape --dry-run --now     # preview only, starts immediately
-  python rebecca.py --app webviewer                    # Sketchfab / Printables / three.js viewers
-Settings (camera, app, hotkey, mode) are remembered in ~/.rebecca.json  (--no-save to skip).
+  python rebecca.py --setup                              # pick a camera, save, exit
+  python rebecca.py --now --dry-run --preview            # try tracking without touching the mouse
+  python rebecca.py                                      # wait for Ctrl+Alt+R (camera window hidden)
+Settings live in ~/.rebecca.json.
 """
 import argparse
 import json
 import math
 import os
+import re
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # quiet the "camera index not found" spam
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")  # much faster webcam start on Windows
 
 import cv2
 import mediapipe as mp
@@ -46,18 +41,26 @@ from pynput.mouse import Button, Controller as MouseController
 
 # ---------------------------------------------------------------------------
 # Per-app navigation profiles: (mouse button, [modifier keys]) per action.
-# Defaults of each app's own mouse navigation. Edit freely, or press A in the preview.
 # ---------------------------------------------------------------------------
 PROFILES = {
     "fusion360":  {"orbit": ("middle", ["shift"]), "pan": ("middle", [])},
+    # Onshape defaults: right-drag rotates, Ctrl+right-drag pans (middle-drag pans too, but can re-fit the view)
     "onshape":    {"orbit": ("right", []),         "pan": ("right", ["ctrl"])},
     "solidworks": {"orbit": ("middle", []),        "pan": ("middle", ["ctrl"]), "roll": ("middle", ["alt"])},
     "blender":    {"orbit": ("middle", []),        "pan": ("middle", ["shift"])},
     "freecad":    {"orbit": ("middle", []),        "pan": ("middle", ["ctrl"])},
-    # three.js-style web viewers (Sketchfab, Printables, GrabCAD previews...): left-drag orbit, right-drag pan
+    # three.js-style web viewers (Sketchfab, Printables, GrabCAD...): left-drag orbit, right-drag pan
     "webviewer":  {"orbit": ("left", []),          "pan": ("right", [])},
     "generic":    {"orbit": ("middle", []),        "pan": ("middle", ["ctrl"])},
 }
+PROFILE_LABELS = {
+    "fusion360": "Fusion 360", "onshape": "Onshape", "solidworks": "SolidWorks", "blender": "Blender",
+    "freecad": "FreeCAD", "webviewer": "Web 3D viewers (Sketchfab, Printables...)", "generic": "Generic (middle-drag)",
+}
+# window-title hints for auto-detection, checked in order
+APP_HINTS = [("onshape", "onshape"), ("fusion", "fusion360"), ("solidworks", "solidworks"),
+             ("blender", "blender"), ("freecad", "freecad"), ("sketchfab", "webviewer"),
+             ("printables", "webviewer"), ("grabcad", "webviewer"), ("thingiverse", "webviewer")]
 
 BUTTONS = {"left": Button.left, "middle": Button.middle, "right": Button.right}
 MODS = {"shift": Key.shift, "ctrl": Key.ctrl, "alt": Key.alt}
@@ -68,12 +71,12 @@ DEADZONE = 0.0006
 CYAN, DIM = (255, 220, 0), (140, 110, 0)  # BGR
 
 CONFIG_PATH = Path.home() / ".rebecca.json"
-DEFAULTS = {"camera": 0, "app": "fusion360", "hotkey": "<ctrl>+<alt>+r",
-            "mode": "toggle", "idle_timeout": 45}
+DEFAULTS = {"camera": 0, "app": "fusion360", "auto_app": True, "hotkey": "<ctrl>+<alt>+r",
+            "mode": "toggle", "idle_timeout": 45, "preview": False, "sounds": True, "arm": False}
 
 
 # ---------------------------------------------------------------------------
-# config + cameras
+# config, cues, active-window detection
 # ---------------------------------------------------------------------------
 def load_config():
     try:
@@ -89,6 +92,58 @@ def save_config(cfg):
         pass
 
 
+def cue(kind):
+    """Short sound so you know the camera went live / off without looking anywhere."""
+    def play():
+        try:
+            if sys.platform == "win32":
+                import winsound
+                winsound.Beep(988 if kind == "start" else 523, 80)
+            elif sys.platform == "darwin":
+                snd = "Tink" if kind == "start" else "Pop"
+                subprocess.run(["afplay", f"/System/Library/Sounds/{snd}.aiff"], timeout=3)
+        except Exception:
+            pass
+    threading.Thread(target=play, daemon=True).start()
+
+
+def foreground_title():
+    """Title of the window you're looking at ('' if unknown). Used to pick the right mouse mapping."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            u = ctypes.windll.user32
+            hwnd = u.GetForegroundWindow()
+            n = u.GetWindowTextLengthW(hwnd)
+            buf = ctypes.create_unicode_buffer(n + 1)
+            u.GetWindowTextW(hwnd, buf, n + 1)
+            return buf.value
+        if sys.platform == "darwin":
+            script = ['tell application "System Events"',
+                      'set p to first application process whose frontmost is true',
+                      'set t to ""', 'try', 'set t to name of front window of p', 'end try',
+                      'return (name of p) & " | " & t', 'end tell']
+            args = ["osascript"] + [x for line in script for x in ("-e", line)]
+            return subprocess.run(args, capture_output=True, text=True, timeout=1.5).stdout.strip()
+        return subprocess.run(["xdotool", "getactivewindow", "getwindowname"],
+                              capture_output=True, text=True, timeout=1.5).stdout.strip()
+    except Exception:
+        return ""
+
+
+def detect_app(title):
+    t = (title or "").lower()
+    if "rebecca" in t:
+        return None
+    for needle, name in APP_HINTS:
+        if needle in t:
+            return name
+    return None
+
+
+# ---------------------------------------------------------------------------
+# cameras
+# ---------------------------------------------------------------------------
 def open_camera(idx):
     cap = cv2.VideoCapture(idx)
     if not cap.isOpened():
@@ -312,7 +367,37 @@ class CadDriver:
 
 
 # ---------------------------------------------------------------------------
-# HUD
+# models (loaded once, kept warm between sessions so the hotkey feels instant)
+# ---------------------------------------------------------------------------
+_MODELS = {}
+
+
+def get_hands():
+    if "hands" not in _MODELS:
+        _MODELS["hands"] = mp.solutions.hands.Hands(
+            static_image_mode=False, max_num_hands=2, model_complexity=1,
+            min_detection_confidence=0.6, min_tracking_confidence=0.6)
+    return _MODELS["hands"]
+
+
+def get_pose():
+    if "pose" not in _MODELS:
+        _MODELS["pose"] = mp.solutions.pose.Pose(
+            model_complexity=0, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    return _MODELS["pose"]
+
+
+def close_models():
+    for m in _MODELS.values():
+        try:
+            m.close()
+        except Exception:
+            pass
+    _MODELS.clear()
+
+
+# ---------------------------------------------------------------------------
+# HUD (only drawn when the preview window is switched on)
 # ---------------------------------------------------------------------------
 def draw_hud(frame, hands_lm, infos, mode, paused, dry, app, cam_idx):
     h, w = frame.shape[:2]
@@ -333,7 +418,7 @@ def draw_hud(frame, hands_lm, infos, mode, paused, dry, app, cam_idx):
         cv2.line(frame, (int(pinched[0].x * w), int(pinched[0].y * h)),
                  (int(pinched[1].x * w), int(pinched[1].y * h)), CYAN, 2, cv2.LINE_AA)
     label = "PAUSED" if paused else (mode.upper() if mode else "STANDBY")
-    cv2.putText(frame, f"REBECCA // {app.upper()} // CAM {cam_idx}", (16, 28),
+    cv2.putText(frame, f"REBECCA // {PROFILE_LABELS.get(app, app).upper()[:24]} // CAM {cam_idx}", (16, 28),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, CYAN, 1, cv2.LINE_AA)
     cv2.putText(frame, f"MODE: {label}" + ("   [DRY RUN]" if dry else ""), (16, 54),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, CYAN, 1, cv2.LINE_AA)
@@ -344,36 +429,53 @@ def draw_hud(frame, hands_lm, infos, mode, paused, dry, app, cam_idx):
 # ---------------------------------------------------------------------------
 # one hotkey-activated session: camera on -> track -> camera off
 # ---------------------------------------------------------------------------
-def run_session(cfg, args, active):
+def run_session(cfg, args, active, on_status=None):
+    """
+    Runs until `active` is cleared (hotkey / tray / idle timeout / Q). `cfg` is read live, so the
+    tray can change preview, app, sounds... while a session is running.
+    on_status(dict) is called with keys among: live, mode, app, error, info.
+    """
+    def emit(**kw):
+        if on_status:
+            try:
+                on_status(kw)
+            except Exception:
+                pass
+
     cap = open_camera(cfg["camera"])
     if cap is None:
-        print(f"[rebecca] camera {cfg['camera']} won't open. Try: python rebecca.py --pick-camera")
+        msg = f"Camera {cfg['camera']} won't open. Pick another one from the Rebecca tray menu."
+        print("[rebecca]", msg)
+        emit(error=msg, live=False)
         active.clear()
         return
+
+    hands_model = get_hands()
+    pose_model = None
     driver = CadDriver(PROFILES[cfg["app"]], args.dry_run, args.sensitivity,
                        args.zoom_gain, args.invert_zoom, args.twist_gain)
-    hands_model = mp.solutions.hands.Hands(
-        static_image_mode=False, max_num_hands=2, model_complexity=1,
-        min_detection_confidence=0.6, min_tracking_confidence=0.6)
-    pose_model = mp.solutions.pose.Pose(
-        model_complexity=0, min_detection_confidence=0.5,
-        min_tracking_confidence=0.5) if args.arm else None
-    win = "REBECCA"
-    if not args.no_preview:
-        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(win, 480, 270)
-        try:
-            cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
-        except cv2.error:
-            pass
-    pinch_state, paused, last_seen = {}, False, time.time()
+    effective = cfg["app"]
+    if cfg.get("auto_app", True):
+        effective = detect_app(foreground_title()) or cfg["app"]
+    driver.profile = PROFILES[effective]
+
+    can_preview = sys.platform != "darwin" or threading.current_thread() is threading.main_thread()
+    win, win_open = "REBECCA", False
+    pinch_state, paused = {}, False
+    last_seen = last_detect = time.time()
+    last_mode = None
     app_names = sorted(PROFILES)
-    print(f"[rebecca] LIVE  camera {cfg['camera']}  profile {cfg['app']}")
+
+    print(f"[rebecca] LIVE  camera {cfg['camera']}  profile {effective}")
+    if cfg.get("sounds", True):
+        cue("start")
+    emit(live=True, mode=None, app=effective)
     try:
         while active.is_set():
             ok, frame = cap.read()
             if not ok:
                 print("[rebecca] camera stopped delivering frames")
+                emit(error="The camera stopped sending video.")
                 break
             frame = cv2.flip(frame, 1)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -388,35 +490,73 @@ def run_session(cfg, args, active):
                     infos.append(info)
                     lms.append(lm)
 
-            if pose_model and infos:
-                pres = pose_model.process(rgb)
-                if pres.pose_landmarks:
-                    P = pres.pose_landmarks.landmark
-                    ls, rs = P[11], P[12]
-                    sw = math.hypot(ls.x - rs.x, ls.y - rs.y)  # shoulder width = our ruler
-                    if sw > 0.05:
-                        for info in infos:
-                            _, sh = min(((15, ls), (16, rs)), key=lambda t: math.hypot(
-                                P[t[0]].x - info.x, P[t[0]].y - info.y))
-                            info.px = (info.x - sh.x) / sw * 0.25
-                            info.py = (info.y - sh.y) / sw * 0.25
-                            info.src = "arm"
+            if cfg.get("arm") and infos:
+                try:
+                    pose_model = pose_model or get_pose()
+                except Exception as e:  # pose model needs a one-time download
+                    cfg["arm"] = False
+                    emit(error="Arm tracking needs a one-time model download and couldn't get it: %s" % e)
+                if pose_model:
+                    pres = pose_model.process(rgb)
+                    if pres.pose_landmarks:
+                        P = pres.pose_landmarks.landmark
+                        ls, rs = P[11], P[12]
+                        sw = math.hypot(ls.x - rs.x, ls.y - rs.y)  # shoulder width = our ruler
+                        if sw > 0.05:
+                            for info in infos:
+                                _, sh = min(((15, ls), (16, rs)), key=lambda t: math.hypot(
+                                    P[t[0]].x - info.x, P[t[0]].y - info.y))
+                                info.px = (info.x - sh.x) / sw * 0.25
+                                info.py = (info.y - sh.y) / sw * 0.25
+                                info.src = "arm"
 
             now = time.time()
             if infos:
                 last_seen = now
-            elif args.mode == "toggle" and cfg["idle_timeout"] and now - last_seen > cfg["idle_timeout"]:
+            elif cfg["mode"] == "toggle" and cfg["idle_timeout"] and now - last_seen > cfg["idle_timeout"]:
                 print("[rebecca] no hands for a while - closing session")
+                emit(info="No hands for a while, so Rebecca turned the camera off.")
                 break
+
+            # follow the window you're looking at (Fusion vs Onshape vs ...), about once a second
+            if now - last_detect > 1.0:
+                last_detect = now
+                wanted = effective
+                if cfg.get("auto_app", True):
+                    wanted = detect_app(foreground_title()) or effective
+                else:
+                    wanted = cfg["app"]
+                if wanted != effective:
+                    driver.release()
+                    effective = wanted
+                    driver.profile = PROFILES[effective]
+                    emit(live=True, mode=last_mode, app=effective)
 
             if paused:
                 driver._request(None)
                 mode = driver.mode
             else:
                 mode = driver.update(infos)
+            if mode != last_mode:
+                last_mode = mode
+                emit(live=True, mode=mode, app=effective)
 
-            if not args.no_preview:
-                draw_hud(frame, lms, infos, mode, paused, args.dry_run, cfg["app"], cfg["camera"])
+            # camera window: hidden by default, can be switched on/off live
+            want_win = bool(cfg.get("preview")) and can_preview
+            if want_win and not win_open:
+                cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(win, 480, 270)
+                try:
+                    cv2.setWindowProperty(win, cv2.WND_PROP_TOPMOST, 1)
+                except cv2.error:
+                    pass
+                win_open = True
+            elif win_open and not want_win:
+                cv2.destroyWindow(win)
+                cv2.waitKey(1)
+                win_open = False
+            if win_open:
+                draw_hud(frame, lms, infos, mode, paused, args.dry_run, effective, cfg["camera"])
                 cv2.imshow(win, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
@@ -425,8 +565,10 @@ def run_session(cfg, args, active):
                     paused = not paused
                 if key == ord("a"):
                     driver.release()
-                    cfg["app"] = app_names[(app_names.index(cfg["app"]) + 1) % len(app_names)]
-                    driver.profile = PROFILES[cfg["app"]]
+                    cfg["auto_app"] = False
+                    cfg["app"] = effective = app_names[(app_names.index(effective) + 1) % len(app_names)]
+                    driver.profile = PROFILES[effective]
+                    emit(live=True, mode=last_mode, app=effective)
                     if not args.no_save:
                         save_config(cfg)
                 if key == ord("c"):
@@ -444,20 +586,24 @@ def run_session(cfg, args, active):
         driver.release()  # never leave a mouse button stuck down
         if cap:
             cap.release()  # camera light off
-        hands_model.close()
-        if pose_model:
-            pose_model.close()
-        if not args.no_preview:
+        if win_open:
             cv2.destroyWindow(win)
             cv2.waitKey(1)
         active.clear()
+        if cfg.get("sounds", True):
+            cue("stop")
+        emit(live=False, mode=None)
         print("[rebecca] session closed, camera released")
 
 
 # ---------------------------------------------------------------------------
 # global hotkey
 # ---------------------------------------------------------------------------
+_MOD_ORDER = ["ctrl", "alt", "alt_gr", "shift", "cmd"]
+
+
 def start_hotkey(spec, mode, active):
+    """Toggle mode: press to start/stop. Hold mode: live only while the keys are down."""
     if mode == "toggle":
         def toggle():
             if active.is_set():
@@ -485,13 +631,70 @@ def start_hotkey(spec, mode, active):
     return listener
 
 
+def _key_spec(k):
+    if isinstance(k, keyboard.Key):
+        name = k.name
+        for suf in ("_l", "_r"):
+            if name.endswith(suf):
+                name = name[:-len(suf)]
+        return f"<{name}>"
+    vk = getattr(k, "vk", None)
+    if sys.platform == "win32" and vk is not None and 48 <= vk <= 90:
+        return chr(vk).lower()   # with Ctrl held, k.char is a control character; the virtual-key code isn't
+    ch = getattr(k, "char", None)
+    if ch and ch.isprintable():
+        return ch.lower()
+    return f"<{vk}>" if vk is not None else None
+
+
+def record_hotkey(timeout=10.0):
+    """Listen for the next key combination and return it as a pynput spec like '<ctrl>+<alt>+r'."""
+    held, order, result = set(), [], {}
+    done = threading.Event()
+    mods = {f"<{m}>" for m in _MOD_ORDER}
+
+    def on_press(k):
+        s = _key_spec(k)
+        if s and s not in held:
+            held.add(s)
+            if s not in order:
+                order.append(s)
+
+    def on_release(k):
+        s = _key_spec(k)
+        if s in held and any(x not in mods for x in order):
+            result["spec"] = "+".join(sorted(
+                order, key=lambda x: _MOD_ORDER.index(x[1:-1]) if x in mods else 99))
+            done.set()
+        held.discard(s)
+
+    with keyboard.Listener(on_press=on_press, on_release=on_release):
+        done.wait(timeout)
+    spec = result.get("spec")
+    if not spec:
+        return None
+    has_mod = any(m in spec for m in mods)
+    is_fn = re.fullmatch(r"<f\d+>", spec) is not None
+    if not (has_mod or is_fn):   # a bare letter would fire every time you type it
+        return None
+    try:
+        keyboard.HotKey.parse(spec)
+    except ValueError:
+        return None
+    return spec
+
+
+# ---------------------------------------------------------------------------
+# command line (debugging / power users)
+# ---------------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(
-        description="REBECCA - hotkey-activated hand-gesture inspection of CAD models.")
-    ap.add_argument("--app", choices=sorted(PROFILES), default=None)
+    ap = argparse.ArgumentParser(description="REBECCA engine - hotkey-activated hand-gesture CAD inspection.")
+    ap.add_argument("--app", choices=sorted(PROFILES), default=None, help="force one mouse mapping (turns off auto-detect)")
+    ap.add_argument("--auto-app", action="store_true", help="pick the mapping from the active window (default)")
     ap.add_argument("--camera", type=int, default=None, help="camera index (see --list-cameras)")
     ap.add_argument("--list-cameras", action="store_true", help="show which cameras work, then exit")
     ap.add_argument("--pick-camera", action="store_true", help="choose a camera from live previews")
+    ap.add_argument("--setup", action="store_true", help="pick a camera, save settings, then exit")
     ap.add_argument("--hotkey", default=None, help='pynput syntax, e.g. "<ctrl>+<alt>+r" or "<f8>"')
     ap.add_argument("--mode", choices=["toggle", "hold"], default=None)
     ap.add_argument("--idle-timeout", type=float, default=None,
@@ -503,10 +706,10 @@ def main():
     ap.add_argument("--invert-zoom", action="store_true")
     ap.add_argument("--twist-gain", type=float, default=600,
                     help="mouse pixels per radian of two-fist twist (negative reverses)")
-    ap.add_argument("--arm", action="store_true",
-                    help="track relative to your shoulder (cancels body sway; heavier on CPU)")
-    ap.add_argument("--no-preview", action="store_true", help="no camera window (hotkey ends the session)")
-    ap.add_argument("--dry-run", action="store_true", help="track and preview, never touch the mouse")
+    ap.add_argument("--arm", action="store_true", help="track relative to your shoulder (needs a pose model download)")
+    ap.add_argument("--preview", dest="preview", action="store_true", default=None, help="show the camera window")
+    ap.add_argument("--no-preview", dest="preview", action="store_false", help="hide the camera window (default)")
+    ap.add_argument("--dry-run", action="store_true", help="track, never touch the mouse")
     ap.add_argument("--no-save", action="store_true", help="don't write ~/.rebecca.json")
     args = ap.parse_args()
 
@@ -520,26 +723,33 @@ def main():
 
     first_run = not CONFIG_PATH.exists()
     cfg = load_config()
-    for k in ("app", "camera", "hotkey", "mode", "idle_timeout"):
+    for k in ("camera", "hotkey", "mode", "idle_timeout", "preview"):
         v = getattr(args, k)
         if v is not None:
             cfg[k] = v
-    args.mode = cfg["mode"]
+    if args.app is not None:
+        cfg["app"], cfg["auto_app"] = args.app, False
+    if args.auto_app:
+        cfg["auto_app"] = True
+    if args.arm:
+        cfg["arm"] = True
 
-    if args.pick_camera or (first_run and args.camera is None):
+    if args.pick_camera or args.setup or (first_run and args.camera is None):
         chosen = pick_camera(cfg["camera"])
         if chosen is not None:
             cfg["camera"] = chosen
     if not args.no_save:
         save_config(cfg)
+    if args.setup:
+        print(f"[rebecca] setup saved: camera {cfg['camera']}, hotkey {cfg['hotkey']}")
+        return
 
     active = threading.Event()
     if args.now:
         active.set()
     start_hotkey(cfg["hotkey"], cfg["mode"], active)
     how = "press it again to stop" if cfg["mode"] == "toggle" else "hold it while you gesture"
-    print(f"[rebecca] waiting. Hotkey {cfg['hotkey']} -> camera {cfg['camera']}, "
-          f"profile {cfg['app']} ({how}). Ctrl+C here to quit.")
+    print(f"[rebecca] waiting. Hotkey {cfg['hotkey']} -> camera {cfg['camera']} ({how}). Ctrl+C here to quit.")
     try:
         while True:
             if active.is_set():
@@ -548,6 +758,8 @@ def main():
                 time.sleep(0.05)
     except KeyboardInterrupt:
         print("\n[rebecca] bye")
+    finally:
+        close_models()
 
 
 if __name__ == "__main__":
