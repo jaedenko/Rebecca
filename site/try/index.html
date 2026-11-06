@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Try Rebecca in your browser</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#03101a;color:#7fefff;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;height:100vh;display:grid;grid-template-rows:auto 1fr auto}
+header,footer{padding:10px 16px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+header{border-bottom:1px solid #0a4a58}footer{border-top:1px solid #0a4a58}
+h1{font-size:15px;margin:0;letter-spacing:.15em;font-weight:600}
+button,select{background:#00dcff22;color:#7fefff;border:1px solid #00dcff;padding:6px 12px;cursor:pointer;font:inherit;border-radius:4px;max-width:260px}
+button:hover{background:#00dcff44}button:disabled{opacity:.4;cursor:default}
+option{background:#03101a}
+main{display:grid;grid-template-columns:minmax(300px,1fr) 1.4fr;gap:10px;padding:10px;min-height:0}
+.panel{border:1px solid #0a4a58;position:relative;min-height:0;overflow:hidden;background:#020a10}
+canvas{width:100%;height:100%;display:block;object-fit:contain}
+#x-hud{position:absolute;left:10px;top:8px;font-size:12px;pointer-events:none;text-shadow:0 0 6px #000}
+#x-mode{font-size:20px;letter-spacing:.2em}
+#x-msg{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;background:#020a10cc}
+label{display:flex;gap:8px;align-items:center}
+ul{list-style:none;margin:0;padding:0;display:flex;gap:16px;flex-wrap:wrap}
+li{opacity:.55}li::before{content:"○ "}li.done{opacity:1;color:#3dff9c}li.done::before{content:"● "}
+@media(max-width:800px){main{grid-template-columns:1fr}}
+</style></head><body>
+<header>
+  <h1><a href="/" style="color:inherit;text-decoration:none">Rebecca</a>: try it in your browser</h1>
+  <button id="x-go">START CAMERA</button>
+  <button id="x-stop" disabled>STOP CAMERA</button>
+  <label>camera <select id="x-cams"><option>(start camera first)</option></select></label>
+  <ul><li data-m="orbit">pinch + move = orbit</li><li data-m="pan">fist + move = pan</li><li data-m="zoom">two pinches, spread/close = zoom</li><li data-m="twist">two fists, turn = twist</li></ul>
+</header>
+<main>
+  <div class="panel"><canvas id="x-cam" width="640" height="360"></canvas>
+    <div id="x-hud"><div id="x-mode">OFFLINE</div><div id="x-read"></div></div>
+    <div id="x-msg">Click START CAMERA.<br>Video is processed inside this tab and never uploaded.<br>Open hand = idle (lift the "mouse").<br>SPACE simulates the hotkey: engage / disengage. ESC stops the camera.</div></div>
+  <div class="panel"><canvas id="x-view"></canvas></div>
+</main>
+<footer>
+  <label>sensitivity <input id="x-sens" type="range" min="0.3" max="3" step="0.1" value="1"></label>
+  <button id="x-reset">RESET VIEW</button>
+  <span id="x-fps"></span>
+</footer>
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+import {HandLandmarker,FilesetResolver} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+// NOTE: every DOM id is prefixed "x-". Un-prefixed ids become window globals and can
+// shadow names MediaPipe's WASM loader calls (an id of "dbg" broke it: "dbg is not a function").
+const $=id=>document.getElementById(id);
+const cam=$("x-cam"),cx=cam.getContext("2d"),viewC=$("x-view");
+
+// ---------- 3D viewport: a little bracket to inspect ----------
+const renderer=new THREE.WebGLRenderer({canvas:viewC,antialias:true});
+renderer.setPixelRatio(devicePixelRatio);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x020a10);
+const camera=new THREE.PerspectiveCamera(50,1,.1,200);
+const part=new THREE.Group();
+function solid(g,x=0,y=0,z=0){
+  const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({color:0x0b3a47,metalness:.3,roughness:.5}));
+  m.position.set(x,y,z);
+  m.add(new THREE.LineSegments(new THREE.EdgesGeometry(g),new THREE.LineBasicMaterial({color:0x00dcff})));
+  part.add(m);
+}
+solid(new THREE.BoxGeometry(3,.6,2));
+solid(new THREE.CylinderGeometry(.5,.5,1.2,32),-.8,.9,0);
+solid(new THREE.BoxGeometry(.6,1.4,2),1.2,.5,0);
+const grid=new THREE.GridHelper(12,24,0x0a6b7d,0x06303a);grid.position.y=-.31;
+scene.add(part,grid,new THREE.AxesHelper(2),new THREE.AmbientLight(0xffffff,.6));
+const dl=new THREE.DirectionalLight(0xffffff,1.2);dl.position.set(3,6,4);scene.add(dl);
+const V0=()=>({az:.8,pol:1.1,r:8,roll:0,t:new THREE.Vector3(0,.4,0)});
+let V=V0();
+function placeCam(){
+  camera.position.set(V.t.x+V.r*Math.sin(V.pol)*Math.sin(V.az),V.t.y+V.r*Math.cos(V.pol),V.t.z+V.r*Math.sin(V.pol)*Math.cos(V.az));
+  camera.up.set(0,1,0);camera.lookAt(V.t);camera.rotateZ(V.roll);camera.updateMatrix();
+}
+function resize(){const w=viewC.clientWidth,h=viewC.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}
+addEventListener("resize",resize);resize();
+$("x-reset").onclick=()=>{V=V0()};
+
+// ---------- gesture logic (same rules as rebecca.py) ----------
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+function analyze(lm,was){
+  const size=dist(lm[0],lm[9])||1e-6;
+  const curled=[[8,6],[12,10],[16,14],[20,18]].filter(([t,p])=>dist(lm[t],lm[0])<dist(lm[p],lm[0])).length;
+  const ratio=dist(lm[4],lm[8])/size,fist=curled>=4;
+  const pts=[0,5,9,13,17].map(i=>lm[i]);
+  return {ratio,fist,pinch:!fist&&ratio<(was?.5:.3),
+    x:pts.reduce((s,p)=>s+p.x,0)/5,y:pts.reduce((s,p)=>s+p.y,0)/5};
+}
+const S={mode:null,cand:null,n:0,last:null,sm:null,zl:null,al:null};
+let engaged=true;
+function request(w){
+  if(w===S.cand)S.n++;else{S.cand=w;S.n=1}
+  if(S.n>=3&&w!==S.mode){
+    S.mode=w;S.last=S.sm=S.zl=S.al=null;
+    if(w)document.querySelector(`[data-m=${w}]`).classList.add("done");
+  }
+}
+function step(hs){
+  const P=hs.filter(h=>h.pinch),F=hs.filter(h=>h.fist);
+  let want=null,ref=null;
+  if(P.length==2)want="zoom";
+  else if(F.length==2)want="twist";
+  else if(P.length){want="orbit";ref=P[0]}
+  else if(F.length){want="pan";ref=F[0]}
+  request(want);
+  if(!want||S.mode!==want)return;
+  const k=+$("x-sens").value;
+  if(want==="zoom"){
+    const d=dist(P[0],P[1]);
+    if(S.zl!=null)V.r=Math.min(40,Math.max(1.5,V.r*Math.exp(-(d-S.zl)*4*k)));
+    S.zl=d;
+  }else if(want==="twist"){
+    const [a,b]=[...F].sort((p,q)=>p.x-q.x),ang=Math.atan2(b.y-a.y,b.x-a.x);
+    if(S.al!=null)V.roll+=((ang-S.al+Math.PI*3)%(2*Math.PI)-Math.PI)*k;
+    S.al=ang;
+  }else{
+    S.sm=S.sm?{x:S.sm.x+.5*(ref.x-S.sm.x),y:S.sm.y+.5*(ref.y-S.sm.y)}:{x:ref.x,y:ref.y};
+    if(S.last){
+      let dx=S.sm.x-S.last.x,dy=S.sm.y-S.last.y;
+      if(Math.abs(dx)<6e-4)dx=0;if(Math.abs(dy)<6e-4)dy=0;
+      if(want==="orbit"){V.az-=dx*Math.PI*2*k;V.pol=Math.min(3.09,Math.max(.05,V.pol-dy*Math.PI*1.5*k))}
+      else{
+        const s=V.r*k*1.2,r=new THREE.Vector3().setFromMatrixColumn(camera.matrix,0),u=new THREE.Vector3().setFromMatrixColumn(camera.matrix,1);
+        V.t.addScaledVector(r,-dx*s).addScaledVector(u,dy*s);
+      }
+    }
+    S.last=S.sm;
+  }
+}
+addEventListener("keydown",e=>{
+  if(e.code==="Space"&&!["SELECT","INPUT","BUTTON"].includes(e.target.tagName)){e.preventDefault();engaged=!engaged}
+  if(e.code==="Escape"&&!$("x-stop").disabled)$("x-stop").click();
+});
+
+// ---------- camera selection + MediaPipe ----------
+const WASM="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODEL="https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const video=document.createElement("video");video.playsInline=true;video.muted=true;
+let hl,lastT=-1,tprev=performance.now(),fps=0;
+const prevPinch={};
+const store={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
+
+async function openStream(deviceId){
+  if(video.srcObject)video.srcObject.getTracks().forEach(t=>t.stop());
+  const c={width:960,height:540};if(deviceId)c.deviceId={exact:deviceId};
+  const stream=await navigator.mediaDevices.getUserMedia({video:c});
+  video.srcObject=stream;await video.play();
+  cam.width=video.videoWidth;cam.height=video.videoHeight;
+  return stream.getVideoTracks()[0].getSettings().deviceId;
+}
+async function fillCameras(activeId){
+  const sel=$("x-cams"),ds=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
+  sel.innerHTML="";
+  ds.forEach((d,i)=>{const o=document.createElement("option");o.value=d.deviceId;o.textContent=d.label||("Camera "+(i+1));sel.append(o)});
+  if(activeId)sel.value=activeId;
+}
+$("x-cams").onchange=async e=>{
+  try{const id=await openStream(e.target.value);store.set("rebecca-cam",id)}
+  catch(err){$("x-read").textContent="Couldn't open that camera: "+err.message}
+};
+
+function drawHand(lm,a,W,H){
+  cx.strokeStyle="#0a8fa5";cx.lineWidth=1;
+  for(const c of HandLandmarker.HAND_CONNECTIONS){cx.beginPath();cx.moveTo(lm[c.start].x*W,lm[c.start].y*H);cx.lineTo(lm[c.end].x*W,lm[c.end].y*H);cx.stroke()}
+  cx.fillStyle="#00dcff";lm.forEach(p=>{cx.beginPath();cx.arc(p.x*W,p.y*H,2.5,0,7);cx.fill()});
+  cx.strokeStyle="#00dcff";cx.lineWidth=2;cx.beginPath();cx.arc(a.x*W,a.y*H,a.pinch||a.fist?30:18,0,7);cx.stroke();
+}
+function loop(){
+  requestAnimationFrame(loop);
+  if(hl&&video.readyState>=2&&video.currentTime!==lastT){
+    lastT=video.currentTime;
+    const res=hl.detectForVideo(video,performance.now()),W=cam.width,H=cam.height;
+    cx.save();cx.scale(-1,1);cx.drawImage(video,-W,0,W,H);cx.restore();   // mirror like a mirror
+    cx.fillStyle="#02101acc";cx.fillRect(0,0,W,H);
+    const hs=[],hd=res.handedness||res.handednesses;
+    res.landmarks.forEach((raw,i)=>{
+      const lm=raw.map(p=>({x:1-p.x,y:p.y})),lab=hd[i][0].categoryName;
+      const a=analyze(lm,prevPinch[lab]);prevPinch[lab]=a.pinch;hs.push(a);drawHand(lm,a,W,H);
+    });
+    step(engaged?hs:[]);
+    $("x-mode").textContent=engaged?(S.mode||"standby").toUpperCase():"DISENGAGED (SPACE)";
+    $("x-read").textContent=hs.length?hs.map(h=>`${h.fist?"FIST":h.pinch?"PINCH":"open"} (pinch ratio ${h.ratio.toFixed(2)})`).join("  |  "):"no hands in view";
+    const now=performance.now();fps=fps*.9+.1*(1000/(now-tprev));tprev=now;$("x-fps").textContent=fps.toFixed(0)+" fps";
+  }
+  placeCam();renderer.render(scene,camera);
+}
+$("x-go").onclick=async()=>{
+  $("x-go").disabled=true;const m=$("x-msg");m.style.display="grid";m.textContent="Loading hand model…";
+  try{
+    if(!hl){   // model only loads once; restarting the camera reuses it
+      const fs=await FilesetResolver.forVisionTasks(WASM);
+      for(const delegate of["GPU","CPU"]){
+        try{hl=await HandLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:MODEL,delegate},runningMode:"VIDEO",numHands:2});break}
+        catch(e){if(delegate==="CPU")throw e}
+      }
+    }
+    let id;
+    try{id=await openStream(store.get("rebecca-cam")||undefined)}catch(e){id=await openStream(undefined)}  // saved camera gone? fall back
+    await fillCameras(id);   // labels only appear after permission is granted
+    m.style.display="none";$("x-stop").disabled=false;
+  }catch(e){
+    m.textContent="Couldn't start: "+(e&&e.message||e)+" — allow the camera, and open this file in Chrome/Edge (not an embedded preview).";
+    $("x-go").disabled=false;
+  }
+};
+$("x-stop").onclick=()=>{   // camera fully released: the webcam light goes off
+  if(video.srcObject)video.srcObject.getTracks().forEach(t=>t.stop());
+  video.srcObject=null;lastT=-1;request(null);request(null);request(null);
+  cx.clearRect(0,0,cam.width,cam.height);
+  $("x-mode").textContent="OFFLINE";$("x-read").textContent="";$("x-fps").textContent="";
+  const m=$("x-msg");m.innerHTML="Camera off — nothing is being captured.<br>Click START CAMERA to resume.";m.style.display="grid";
+  $("x-go").disabled=false;$("x-stop").disabled=true;
+};
+loop();
+</script></body></html>

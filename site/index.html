@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rebecca: inspect CAD models with your hands</title>
+<meta name="description" content="Rebecca turns webcam hand gestures into orbit, pan and zoom for Fusion 360, Onshape, SolidWorks and web 3D viewers. Free and open source.">
+<meta property="og:title" content="Rebecca: inspect CAD models with your hands">
+<meta property="og:description" content="Pinch to orbit, make a fist to pan, spread two hands to zoom. Free and open source.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='27' fill='%2303101a' stroke='%2300dcff' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='12' fill='%2300dcff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#04121a;--panel:#0a1f2b;--line:#14424f;--cyan:#00dcff;--text:#d8faff;--dim:#8fb3be;--green:#3dff9c;--amber:#ffc400;--pink:#ff50c8}
+*{box-sizing:border-box}
+html{color-scheme:dark;scroll-behavior:smooth}
+body{margin:0;color:var(--text);font:400 17px/1.6 Archivo,"Segoe UI",system-ui,sans-serif;font-stretch:100%;
+  background:var(--ink) linear-gradient(rgba(0,220,255,.045) 1px,transparent 1px) 0 0/48px 48px,linear-gradient(90deg,rgba(0,220,255,.045) 1px,transparent 1px) 0 0/48px 48px}
+a{color:var(--cyan)}a:focus-visible,summary:focus-visible{outline:3px solid var(--amber);outline-offset:3px;border-radius:4px}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+section{padding:72px 0;border-top:1px solid var(--line)}
+h1,h2{font-stretch:125%;font-weight:800;line-height:1.05;margin:0 0 20px;letter-spacing:-.01em}
+h1{font-size:clamp(2.5rem,6.4vw,4.7rem)}h2{font-size:clamp(1.7rem,3.6vw,2.5rem)}
+p{max-width:62ch;margin:0 0 16px;color:var(--dim)}p strong,li strong{color:var(--text)}
+header.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:32px;align-items:center;padding:56px 0 64px}
+.name{font-weight:700;font-stretch:125%;margin:0 0 28px;color:var(--cyan)}
+.lead{font-size:1.2rem;color:var(--text)}
+.btns{display:flex;flex-wrap:wrap;gap:12px;margin:28px 0 12px}
+.btn{display:inline-block;padding:14px 24px;border-radius:6px;font-weight:700;text-decoration:none;background:var(--cyan);color:var(--ink)}
+.btn.alt{background:transparent;color:var(--cyan);border:2px solid var(--cyan)}
+.btn:hover{filter:brightness(1.12)}
+.small{font-size:.9rem}
+/* the one memorable thing: a cube driven by the same four gestures as the app */
+.stage{position:relative;height:380px;perspective:900px;display:grid;place-items:center}
+.cube{width:140px;height:140px;position:relative;transform-style:preserve-3d;animation:demo 12s ease-in-out infinite}
+.f{position:absolute;inset:0;border:2px solid var(--cyan);background:rgba(0,220,255,.06)}
+.f:nth-child(1){transform:translateZ(70px)}.f:nth-child(2){transform:rotateY(180deg) translateZ(70px)}
+.f:nth-child(3){transform:rotateY(90deg) translateZ(70px)}.f:nth-child(4){transform:rotateY(-90deg) translateZ(70px)}
+.f:nth-child(5){transform:rotateX(90deg) translateZ(70px)}.f:nth-child(6){transform:rotateX(-90deg) translateZ(70px)}
+@keyframes demo{
+0%{transform:translate(0,0) scale(1) rotateX(-20deg) rotateY(25deg) rotateZ(0)}
+23%,27%{transform:translate(0,0) scale(1) rotateX(12deg) rotateY(215deg) rotateZ(0)}
+48%,52%{transform:translate(70px,-34px) scale(1) rotateX(12deg) rotateY(215deg) rotateZ(0)}
+73%,77%{transform:translate(70px,-34px) scale(1.5) rotateX(12deg) rotateY(215deg) rotateZ(0)}
+96%{transform:translate(0,0) scale(1) rotateX(12deg) rotateY(215deg) rotateZ(120deg)}
+100%{transform:translate(0,0) scale(1) rotateX(-20deg) rotateY(25deg) rotateZ(0)}}
+.pills{position:absolute;bottom:6px;left:50%;width:270px;height:42px;transform:translateX(-50%)}
+.pill{position:absolute;inset:0;display:flex;align-items:center;gap:12px;padding:0 22px;border:2px solid var(--c);border-radius:999px;background:#07151e;font-weight:700;opacity:0;animation:vis 12s infinite}
+.pill::before{content:"";width:12px;height:12px;border-radius:50%;background:var(--c)}
+@keyframes vis{0%,23%{opacity:1}26%,100%{opacity:0}}
+@media(prefers-reduced-motion:reduce){.cube,.pill{animation:none}.cube{transform:rotateX(-20deg) rotateY(25deg)}.pill:first-child{opacity:1}}
+/* download */
+.dls{display:grid;gap:12px;margin-top:24px}
+.dl{display:grid;grid-template-columns:1fr auto;gap:4px 16px;align-items:center;padding:18px 20px;border:1px solid var(--line);border-radius:8px;background:var(--panel);text-decoration:none;color:var(--text)}
+.dl.rec{border-color:var(--cyan)}.dl:hover{border-color:var(--cyan)}
+.dl b{font-weight:700}.dl span{color:var(--dim);font-size:.95rem}.dl em{grid-row:1/3;grid-column:2;font-style:normal;color:var(--cyan);font-weight:700}
+/* gestures: colour = the colour of the indicator pill inside the app */
+.g{display:grid;gap:10px;margin:24px 0 0;padding:0;list-style:none}
+.g li{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 24px;padding:14px 18px;border-left:5px solid var(--c);background:var(--panel);border-radius:0 8px 8px 0}
+.g b{font-weight:700}.g span{color:var(--dim)}
+.steps{counter-reset:s;list-style:none;padding:0;margin:24px 0 0;display:grid;gap:14px}
+.steps li{counter-increment:s;display:grid;grid-template-columns:44px 1fr;gap:12px;align-items:start;color:var(--dim)}
+.steps li::before{content:counter(s);display:grid;place-items:center;width:36px;height:36px;border:2px solid var(--cyan);border-radius:50%;color:var(--cyan);font-weight:700}
+.apps{display:flex;flex-wrap:wrap;gap:10px;padding:0;list-style:none;margin:24px 0 0}
+.apps li{padding:8px 16px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}
+details{border-bottom:1px solid var(--line);padding:14px 0}summary{cursor:pointer;font-weight:700}
+details p{margin:10px 0 0}
+footer{padding:40px 0 56px;border-top:1px solid var(--line);color:var(--dim);font-size:.95rem}
+@media(max-width:820px){header.hero{grid-template-columns:1fr}.stage{height:320px}.g li{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="hero">
+  <div>
+    <p class="name">Rebecca</p>
+    <h1>Inspect CAD models with your hands.</h1>
+    <p class="lead">Rebecca watches your webcam and turns a pinch into orbit, a fist into pan and two hands into zoom. Press a hotkey, gesture at the model, press it again.</p>
+    <div class="btns">
+      <a class="btn" id="hero-dl" href="https://github.com/jaedenko/Rebecca/releases/latest/download/RebeccaSetup.exe">Download for Windows</a>
+      <a class="btn alt" href="/try">Try it in your browser</a>
+    </div>
+    <p class="small">Free and open source. Windows 10 and 11 are supported; macOS is experimental.</p>
+  </div>
+  <div class="stage" aria-label="A cube being orbited, panned, zoomed and twisted by hand gestures">
+    <div class="cube"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i></div>
+    <div class="pills">
+      <div class="pill" style="--c:#00dcff;animation-delay:0s">ORBIT &nbsp;|&nbsp; Onshape</div>
+      <div class="pill" style="--c:#3dff9c;animation-delay:3s">PAN &nbsp;|&nbsp; Onshape</div>
+      <div class="pill" style="--c:#ffc400;animation-delay:6s">ZOOM &nbsp;|&nbsp; Onshape</div>
+      <div class="pill" style="--c:#ff50c8;animation-delay:9s">TWIST &nbsp;|&nbsp; Onshape</div>
+    </div>
+  </div>
+</header>
+
+<section id="learn">
+  <h2>Made for looking, not modeling</h2>
+  <p>Rebecca is for inspecting a finished model, or a link someone just sent you. Keep the mouse for sketching and use your hands to turn the part around.</p>
+  <ul class="g">
+    <li style="--c:#00dcff"><b>Pinch and move</b><span>Orbit around the part</span></li>
+    <li style="--c:#3dff9c"><b>Make a fist and move</b><span>Pan the view</span></li>
+    <li style="--c:#ffc400"><b>Pinch with both hands, spread or close</b><span>Zoom in and out</span></li>
+    <li style="--c:#ff50c8"><b>Two fists, turn like a wheel</b><span>Twist (rolls the view in SolidWorks)</span></li>
+    <li style="--c:#8fb3be"><b>Open your hand</b><span>Pause, like lifting a mouse to reposition</span></li>
+  </ul>
+  <p class="small" style="margin-top:14px">These colors match the indicator that appears at the top of your screen while Rebecca is on.</p>
+  <ol class="steps">
+    <li><span><strong>Install and pick your camera.</strong> Rebecca runs in the system tray. Right-click its icon, open Camera and choose your webcam.</span></li>
+    <li><span><strong>Put your cursor over the model and press Ctrl+Alt+R.</strong> The camera turns on and you hear a short beep.</span></li>
+    <li><span><strong>Gesture, then press the hotkey again.</strong> The camera turns off. It also turns off by itself after 45 seconds without hands.</span></li>
+  </ol>
+  <h2 style="margin-top:56px">Works with the viewer you're in</h2>
+  <p>Rebecca reads the title of the window you're looking at and picks the right mouse mapping, so a browser tab showing Onshape behaves like Onshape.</p>
+  <ul class="apps"><li>Fusion 360</li><li>Onshape</li><li>SolidWorks</li><li>Blender</li><li>FreeCAD</li><li>Sketchfab and Printables viewers</li></ul>
+</section>
+
+<section id="download">
+  <h2>Download Rebecca</h2>
+  <p>The current version is on GitHub. Run the installer, then look for the ring icon in your system tray.</p>
+  <div class="dls">
+    <a class="dl rec" data-os="win" href="https://github.com/jaedenko/Rebecca/releases/latest/download/RebeccaSetup.exe"><b>Windows installer</b><em>RebeccaSetup.exe</em><span>Recommended. No admin rights needed. About 190 MB.</span></a>
+    <a class="dl" data-os="win" href="https://github.com/jaedenko/Rebecca/releases/latest/download/Rebecca-windows-portable.zip"><b>Windows portable zip</b><em>.zip</em><span>Unzip anywhere and run Rebecca.exe. Nothing is installed.</span></a>
+    <a class="dl" data-os="mac" href="https://github.com/jaedenko/Rebecca/releases/latest/download/Rebecca-macOS.dmg"><b>macOS (experimental)</b><em>.dmg</em><span>Drag to Applications, then allow Camera, Accessibility and Input Monitoring.</span></a>
+  </div>
+  <p class="small" style="margin-top:18px">Rebecca isn't code-signed yet, so Windows may show a warning. In SmartScreen choose <strong>More info</strong>, then <strong>Run anyway</strong>. If Smart App Control blocks it, use the portable zip. Prefer to build it yourself? <a href="https://github.com/jaedenko/Rebecca">The source is on GitHub.</a></p>
+</section>
+
+<section id="faq">
+  <h2>Questions</h2>
+  <details><summary>Does Rebecca record or upload my video?</summary><p>No. Video is processed on your computer and never saved or sent anywhere. The camera is on only while a session is running, and Rebecca has no accounts or analytics. It contacts the internet only if you click "Check for updates".</p></details>
+  <details><summary>What do I need?</summary><p>A webcam and Windows 10 or 11. Good, even light on your hands helps more than a better camera.</p></details>
+  <details><summary>How do I change the hotkey, speed or camera?</summary><p>Right-click the tray icon. Hotkey, camera, speed, zoom direction, the on-screen indicator, sounds and start-at-login are all in the menu.</p></details>
+  <details><summary>The camera won't open</summary><p>Another app, such as Zoom, Teams or a browser tab, is probably using it. Close that app, or pick a different camera from the tray menu.</p></details>
+  <details><summary>Can I try it without installing?</summary><p>Yes. <a href="/try">The browser version</a> runs the same gestures on a sample part. Your video stays in the tab.</p></details>
+  <details><summary>Why "Rebecca"?</summary><p>It stands for Really Exciting Borderline Ecstatic CAD Control Articulator.</p></details>
+</section>
+<footer>Rebecca is free software under the MIT license. <a href="https://github.com/jaedenko/Rebecca">Source and issues on GitHub</a>.</footer>
+</div>
+<script>
+// highlight the download that matches your computer
+const mac=/Mac/i.test(navigator.platform||navigator.userAgent);
+if(mac){const b=document.getElementById("hero-dl");b.textContent="Download for macOS (experimental)";b.href="https://github.com/jaedenko/Rebecca/releases/latest/download/Rebecca-macOS.dmg";
+document.querySelectorAll(".dl").forEach(a=>a.classList.toggle("rec",a.dataset.os==="mac"))}
+</script>
+</body>
+</html>
