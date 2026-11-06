@@ -6,7 +6,7 @@ finished model or a link someone sent you**, not for everyday modeling.
 
 Rebecca lives in your **system tray**. The camera is **off** until you press the hotkey
 (**Ctrl+Alt+R**) with your cursor over a CAD viewport, and off again when you press it again
-(or after 45 s without hands). A short beep tells you it went live / stopped. The camera window is
+(or after 45 s without hands). A short beep and a small **on-screen indicator pill** ("ORBIT | Onshape") tell you it went live / stopped. The camera window is
 **hidden by default**; turn it on from the tray menu if you want to see yourself.
 
 ## Install
@@ -41,7 +41,7 @@ automatically (a browser tab with "Onshape" in its title -> Onshape, and so on).
 
 ## Tray menu
 Status line - Start/stop now (left-click the icon) - Camera - App to control - Show camera preview -
-Sound cues - Arm-relative tracking (experimental) - Hotkey (change it, or switch to hold-to-use) -
+Show on-screen indicator - Sound cues - Arm-relative tracking (experimental) - Hotkey (change it, or switch to hold-to-use) -
 Start at login - Quit. Settings are saved in `~/.rebecca.json`; a log is in `~/.rebecca.log`.
 
 ## Building the apps yourself

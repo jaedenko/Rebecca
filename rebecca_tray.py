@@ -25,9 +25,11 @@ if getattr(sys, "frozen", False):
 import pystray
 
 import rebecca as R
-from rebecca_icon import make_icon
+from rebecca_icon import make_icon, MODE_COLORS
+from rebecca_overlay import Overlay
 
 PORT = 47831  # single-instance lock
+SHORT_APP = {"webviewer": "Web viewer", "generic": "Generic"}
 
 
 def pretty_hotkey(spec):
@@ -110,6 +112,7 @@ class TrayApp:
         self.quitting = False
         self.args = argparse.Namespace(dry_run=False, sensitivity=1800, zoom_gain=30,
                                        invert_zoom=False, twist_gain=600, no_save=False)
+        self.overlay = Overlay()
         self.icon = None if headless else pystray.Icon("Rebecca", make_icon(), "Rebecca", self.build_menu())
 
     # ----- helpers -----------------------------------------------------------
@@ -140,6 +143,24 @@ class TrayApp:
         except Exception:
             pass
 
+    def pill(self, d=None):
+        """On-screen indicator: 'Starting camera...' -> 'ORBIT - Onshape' -> 'Rebecca off'."""
+        d = d or {}
+        if not self.cfg.get("pill", True) or d.get("error"):
+            return self.overlay.hide()
+        if d.get("starting"):
+            self.overlay.show("Starting camera...", "#7fa8b4")
+        elif self.state["live"]:
+            mode = self.state["mode"]
+            r, g, b = MODE_COLORS.get(mode, (0, 220, 255))
+            app = SHORT_APP.get(self.state["app"], R.PROFILE_LABELS.get(self.state["app"], ""))
+            self.overlay.show(f"{(mode or 'ready').upper()}   |   {app}", f"#{r:02x}{g:02x}{b:02x}")
+        elif d.get("live") is False:
+            self.overlay.show("Rebecca off", "#78909a")
+            self.overlay.hide(after=0.9)
+        else:
+            self.overlay.hide()
+
     def on_status(self, d):
         if d.get("error"):
             self.notify(d["error"])
@@ -148,6 +169,7 @@ class TrayApp:
         for k in ("live", "mode", "app"):
             if k in d:
                 self.state[k] = d[k]
+        self.pill(d)
         self.refresh()
 
     # ----- session worker + hotkey ------------------------------------------
@@ -187,8 +209,10 @@ class TrayApp:
 
     # ----- menu actions ------------------------------------------------------
     def flip(self, key):
-        self.cfg[key] = not self.cfg[key]
+        self.cfg[key] = not self.cfg.get(key, False)
         self.save()
+        if key == "pill":
+            self.pill()
         self.refresh()
 
     def flip_autostart(self):
@@ -264,6 +288,7 @@ class TrayApp:
         self.stop_hotkey()
         time.sleep(0.2)
         R.close_models()
+        self.overlay.stop()
         if self.icon:
             self.icon.stop()
 
@@ -308,6 +333,8 @@ class TrayApp:
             I("App to control", M(self.app_items)),
             I("Show camera preview", lambda icon, item: self.flip("preview"),
               checked=lambda item: bool(self.cfg["preview"])),
+            I("Show on-screen indicator", lambda icon, item: self.flip("pill"),
+              checked=lambda item: bool(self.cfg.get("pill", True))),
             I("Sound cues", lambda icon, item: self.flip("sounds"),
               checked=lambda item: bool(self.cfg["sounds"])),
             I("Arm-relative tracking (experimental)", lambda icon, item: self.flip("arm"),
@@ -329,6 +356,7 @@ class TrayApp:
     # ----- run ----------------------------------------------------------------
     def _setup(self, icon):
         icon.visible = True
+        self.overlay.start()
         threading.Thread(target=self.worker, daemon=True).start()
         self.start_hotkey()
         if self.first_run:
@@ -361,6 +389,7 @@ def selftest():
     check("hands model", lambda: R.get_hands().process(np.zeros((480, 640, 3), np.uint8)) is not None)
     pose = Path(mp.__file__).parent / "modules" / "pose_landmark" / "pose_landmark_lite.tflite"
     check("pose model bundled", lambda: pose.exists() or (_ for _ in ()).throw(FileNotFoundError(str(pose))))
+    check("tkinter + Tcl (on-screen indicator)", lambda: __import__("tkinter").Tcl().eval("info patchlevel"))
     check("mouse/keyboard control", lambda: (R.MouseController(), R.KeyboardController()) and "ok")
     check("hotkey parse", lambda: R.keyboard.HotKey.parse("<ctrl>+<alt>+r"))
     check("active window", lambda: repr(R.foreground_title())[:40])

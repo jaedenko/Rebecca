@@ -72,7 +72,7 @@ CYAN, DIM = (255, 220, 0), (140, 110, 0)  # BGR
 
 CONFIG_PATH = Path.home() / ".rebecca.json"
 DEFAULTS = {"camera": 0, "app": "fusion360", "auto_app": True, "hotkey": "<ctrl>+<alt>+r",
-            "mode": "toggle", "idle_timeout": 45, "preview": False, "sounds": True, "arm": False}
+            "mode": "toggle", "idle_timeout": 45, "preview": False, "sounds": True, "arm": False, "pill": True}
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +442,7 @@ def run_session(cfg, args, active, on_status=None):
             except Exception:
                 pass
 
+    emit(starting=True)   # webcams can take a second or two to open; let the UI show it
     cap = open_camera(cfg["camera"])
     if cap is None:
         msg = f"Camera {cfg['camera']} won't open. Pick another one from the Rebecca tray menu."
