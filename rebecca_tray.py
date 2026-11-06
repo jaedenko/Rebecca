@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+import webbrowser
 from pathlib import Path
 
 if getattr(sys, "frozen", False):
@@ -27,9 +28,13 @@ import pystray
 import rebecca as R
 from rebecca_icon import make_icon, MODE_COLORS
 from rebecca_overlay import Overlay
+import rebecca_update
 
 PORT = 47831  # single-instance lock
 SHORT_APP = {"webviewer": "Web viewer", "generic": "Generic"}
+SITE_URL = "https://rebecca-cad.vercel.app"
+SPEEDS = [("Slow", 1200), ("Normal", 1800), ("Fast", 2600)]
+ZOOMS = [("Slow", 18), ("Normal", 30), ("Fast", 45)]
 
 
 def pretty_hotkey(spec):
@@ -222,6 +227,35 @@ class TrayApp:
             self.notify(f"Couldn't change start-at-login: {e}")
         self.refresh()
 
+    def set_value(self, key, value):
+        self.cfg[key] = value
+        self.save()
+        self.refresh()
+
+    def choice_items(self, key, options):
+        I = pystray.MenuItem
+        for label, value in options:
+            yield I(label, self._set_action(key, value), checked=self._is_value(key, value), radio=True)
+
+    def _set_action(self, key, value):
+        return lambda icon, item: self.set_value(key, value)
+
+    def _is_value(self, key, value):
+        return lambda item: self.cfg.get(key) == value
+
+    def check_updates(self):
+        def work():
+            try:
+                tag, url, newer = rebecca_update.check(R.__version__)
+            except Exception as e:
+                return self.notify(f"Couldn't check for updates ({e.__class__.__name__}). Are you online?")
+            if newer:
+                self.notify(f"Rebecca {tag} is available. Opening the download page.")
+                webbrowser.open(url)
+            else:
+                self.notify(f"You're up to date (Rebecca {R.__version__}).")
+        threading.Thread(target=work, daemon=True).start()
+
     def set_mode(self, mode):
         self.cfg["mode"] = mode
         self.save()
@@ -331,6 +365,11 @@ class TrayApp:
             M.SEPARATOR,
             I("Camera", M(self.camera_items)),
             I("App to control", M(self.app_items)),
+            I("Speed", M(lambda: self.choice_items("sensitivity", SPEEDS))),
+            I("Zoom speed", M(lambda: self.choice_items("zoom_gain", ZOOMS))),
+            I("Reverse zoom direction", lambda icon, item: self.flip("invert_zoom"),
+              checked=lambda item: bool(self.cfg.get("invert_zoom"))),
+            M.SEPARATOR,
             I("Show camera preview", lambda icon, item: self.flip("preview"),
               checked=lambda item: bool(self.cfg["preview"])),
             I("Show on-screen indicator", lambda icon, item: self.flip("pill"),
@@ -350,6 +389,9 @@ class TrayApp:
             I("Start at login", lambda icon, item: self.flip_autostart(),
               checked=lambda item: autostart_enabled()),
             M.SEPARATOR,
+            I(lambda item: f"Rebecca {R.__version__}", None, enabled=False),
+            I("Check for updates...", lambda icon, item: self.check_updates()),
+            I("Website and help", lambda icon, item: webbrowser.open(SITE_URL)),
             I("Quit Rebecca", lambda icon, item: self.quit()),
         )
 
@@ -391,6 +433,7 @@ def selftest():
     check("pose model bundled", lambda: pose.exists() or (_ for _ in ()).throw(FileNotFoundError(str(pose))))
     check("tkinter + Tcl (on-screen indicator)", lambda: __import__("tkinter").Tcl().eval("info patchlevel"))
     check("mouse/keyboard control", lambda: (R.MouseController(), R.KeyboardController()) and "ok")
+    check("version compare", lambda: rebecca_update.is_newer("v0.3.0", R.__version__))
     check("hotkey parse", lambda: R.keyboard.HotKey.parse("<ctrl>+<alt>+r"))
     check("active window", lambda: repr(R.foreground_title())[:40])
     out = "\n".join(lines)

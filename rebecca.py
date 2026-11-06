@@ -20,6 +20,7 @@ Examples:
 Settings live in ~/.rebecca.json.
 """
 import argparse
+import atexit
 import json
 import math
 import os
@@ -28,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # quiet the "camera index not found" spam
@@ -69,10 +71,12 @@ PINCH_ON, PINCH_OFF = 0.30, 0.50
 SWITCH_FRAMES = 3
 DEADZONE = 0.0006
 CYAN, DIM = (255, 220, 0), (140, 110, 0)  # BGR
+__version__ = "0.2.0"
 
 CONFIG_PATH = Path.home() / ".rebecca.json"
 DEFAULTS = {"camera": 0, "app": "fusion360", "auto_app": True, "hotkey": "<ctrl>+<alt>+r",
-            "mode": "toggle", "idle_timeout": 45, "preview": False, "sounds": True, "arm": False, "pill": True}
+            "mode": "toggle", "idle_timeout": 45, "preview": False, "sounds": True, "arm": False, "pill": True,
+            "sensitivity": 1800, "zoom_gain": 30, "invert_zoom": False, "twist_gain": 600}
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +245,9 @@ class HandInfo:
         self.px, self.py, self.src = self.x, self.y, "hand"  # motion coords (arm mode overrides)
 
 
+_DRIVERS = weakref.WeakSet()
+
+
 class CadDriver:
     def __init__(self, profile, dry, sensitivity, zoom_gain, invert_zoom, twist_gain=600):
         self.profile = profile
@@ -261,6 +268,7 @@ class CadDriver:
         self.src = None
         self.home = None   # cursor position before a drag, restored afterwards
         self.held = None   # (button, mods) currently pressed
+        _DRIVERS.add(self)
 
     def _press(self, action):
         btn, mods = self.profile.get(action) or self.profile["orbit"]
@@ -366,6 +374,18 @@ class CadDriver:
         return self.mode
 
 
+def release_all():
+    """Safety net: never leave a mouse button or modifier key held down if the app exits."""
+    for d in list(_DRIVERS):
+        try:
+            d.release()
+        except Exception:
+            pass
+
+
+atexit.register(release_all)
+
+
 # ---------------------------------------------------------------------------
 # models (loaded once, kept warm between sessions so the hotkey feels instant)
 # ---------------------------------------------------------------------------
@@ -445,7 +465,8 @@ def run_session(cfg, args, active, on_status=None):
     emit(starting=True)   # webcams can take a second or two to open; let the UI show it
     cap = open_camera(cfg["camera"])
     if cap is None:
-        msg = f"Camera {cfg['camera']} won't open. Pick another one from the Rebecca tray menu."
+        msg = (f"Camera {cfg['camera']} won't open. Another app (Zoom, Teams, a browser tab) may be using it. "
+               "Close that app, or pick another camera from the Rebecca tray menu.")
         print("[rebecca]", msg)
         emit(error=msg, live=False)
         active.clear()
@@ -453,8 +474,13 @@ def run_session(cfg, args, active, on_status=None):
 
     hands_model = get_hands()
     pose_model = None
-    driver = CadDriver(PROFILES[cfg["app"]], args.dry_run, args.sensitivity,
-                       args.zoom_gain, args.invert_zoom, args.twist_gain)
+    driver = CadDriver(PROFILES[cfg["app"]], args.dry_run, 1800, 30, False, 600)
+
+    def tune():   # speed settings are read live, so tray changes apply immediately
+        driver.sens = float(cfg["sensitivity"])
+        driver.zoom_gain = float(cfg["zoom_gain"]) * (-1 if cfg["invert_zoom"] else 1)
+        driver.twist_gain = float(cfg["twist_gain"])
+    tune()
     effective = cfg["app"]
     if cfg.get("auto_app", True):
         effective = detect_app(foreground_title()) or cfg["app"]
@@ -478,6 +504,7 @@ def run_session(cfg, args, active, on_status=None):
                 print("[rebecca] camera stopped delivering frames")
                 emit(error="The camera stopped sending video.")
                 break
+            tune()
             frame = cv2.flip(frame, 1)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             res = hands_model.process(rgb)
@@ -701,11 +728,11 @@ def main():
     ap.add_argument("--idle-timeout", type=float, default=None,
                     help="toggle mode: end the session after N seconds without hands (0 = never)")
     ap.add_argument("--now", action="store_true", help="start a session immediately (no hotkey press)")
-    ap.add_argument("--sensitivity", type=float, default=1800,
+    ap.add_argument("--sensitivity", type=float, default=None,
                     help="mouse pixels per full camera-frame width of hand travel")
-    ap.add_argument("--zoom-gain", type=float, default=30)
+    ap.add_argument("--zoom-gain", type=float, default=None)
     ap.add_argument("--invert-zoom", action="store_true")
-    ap.add_argument("--twist-gain", type=float, default=600,
+    ap.add_argument("--twist-gain", type=float, default=None,
                     help="mouse pixels per radian of two-fist twist (negative reverses)")
     ap.add_argument("--arm", action="store_true", help="track relative to your shoulder (needs a pose model download)")
     ap.add_argument("--preview", dest="preview", action="store_true", default=None, help="show the camera window")
@@ -734,6 +761,11 @@ def main():
         cfg["auto_app"] = True
     if args.arm:
         cfg["arm"] = True
+    for k in ("sensitivity", "zoom_gain", "twist_gain"):
+        if getattr(args, k) is not None:
+            cfg[k] = getattr(args, k)
+    if args.invert_zoom:
+        cfg["invert_zoom"] = True
 
     if args.pick_camera or args.setup or (first_run and args.camera is None):
         chosen = pick_camera(cfg["camera"])

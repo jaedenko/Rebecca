@@ -9,6 +9,8 @@ Rebecca lives in your **system tray**. The camera is **off** until you press the
 (or after 45 s without hands). A short beep and a small **on-screen indicator pill** ("ORBIT | Onshape") tell you it went live / stopped. The camera window is
 **hidden by default**; turn it on from the tray menu if you want to see yourself.
 
+**Website:** https://rebecca-cad.vercel.app (downloads, how it works, and a try-it-in-your-browser demo)
+
 ## Install
 **Windows:** download `RebeccaSetup.exe` from the [Releases](../../releases) page (or run the *Build Rebecca*
 workflow and grab the artifact), double-click, done. No Python needed.
@@ -40,9 +42,22 @@ automatically (a browser tab with "Onshape" in its title -> Onshape, and so on).
 **App to control** in the tray menu. Onshape must use its default mouse settings (right-drag rotates).
 
 ## Tray menu
-Status line - Start/stop now (left-click the icon) - Camera - App to control - Show camera preview -
-Show on-screen indicator - Sound cues - Arm-relative tracking (experimental) - Hotkey (change it, or switch to hold-to-use) -
-Start at login - Quit. Settings are saved in `~/.rebecca.json`; a log is in `~/.rebecca.log`.
+Status line - Start/stop now (left-click the icon) - Camera - App to control - Speed - Zoom speed -
+Reverse zoom direction - Show camera preview - Show on-screen indicator - Sound cues -
+Arm-relative tracking (experimental) - Hotkey (change it, or switch to hold-to-use) - Start at login -
+Check for updates - Website and help - Quit. Settings are saved in `~/.rebecca.json`; a log is in `~/.rebecca.log`.
+
+## Privacy
+Video is processed on your computer and is never saved or sent anywhere. The camera is on only while a
+session is running. There are no accounts and no analytics; the only network request Rebecca ever makes is
+the one you trigger with **Check for updates**.
+
+## Troubleshooting
+- **Camera won't open:** another app (Zoom, Teams, a browser tab) may be using it. Close it or pick another camera.
+- **Nothing moves in a CAD program running as administrator:** Windows blocks input from a normal app into an
+  elevated one. Run Rebecca as administrator too.
+- **Wrong mouse mapping:** choose the app under **App to control** instead of auto-detect. Onshape must use its default mouse settings.
+- Logs: `~/.rebecca.log`. Settings: `~/.rebecca.json`.
 
 ## Building the apps yourself
 `.github/workflows/build.yml` builds the Windows installer (PyInstaller + Inno Setup) and a macOS dmg on
@@ -52,6 +67,12 @@ The build runs a self-test on the packaged app before uploading.
 ## Zero-install test bench
 Open `testbench/index.html` in Chrome or Edge to try the gestures on a 3D part, no install.
 SPACE simulates the hotkey, ESC stops the camera.
+
+## Development
+`pip install -r requirements.txt pytest && pytest` runs the tests (they also run in CI before every build).
+
+## License
+MIT, see `LICENSE`. Bundled libraries are listed in `THIRD_PARTY_NOTICES.md`.
 
 ## Command line (debugging)
 `python rebecca.py --list-cameras | --setup | --now --dry-run --preview | --mode hold --hotkey "<f8>"`

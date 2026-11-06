@@ -19,7 +19,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install -r requirements.txt pyinstaller pytest
+      - name: Run tests
+        run: pytest -q
       - name: Pre-download the pose model so it gets bundled into the app
         run: python -c "import mediapipe as mp; mp.solutions.pose.Pose(model_complexity=0).close(); mp.solutions.hands.Hands(model_complexity=1).close()"
       - name: Build Rebecca.exe

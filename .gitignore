@@ -5,3 +5,4 @@ build/
 dist/
 installer_out/
 *.spec
+.pytest_cache/
