@@ -30,14 +30,34 @@ jobs:
           $p = Start-Process -FilePath "dist\Rebecca\Rebecca.exe" -ArgumentList "--selftest" -Wait -PassThru
           if (Test-Path "$env:TEMP\rebecca-selftest.log") { Get-Content "$env:TEMP\rebecca-selftest.log" }
           if ($p.ExitCode -ne 0) { throw "Self-test failed (exit code $($p.ExitCode))" }
-      - name: Build installer + portable zip
+      - name: Install Inno Setup
         shell: pwsh
         run: |
+          function Flat($t) { ($t -replace '%','%25' -replace "`r",'' -replace "`n",'%0A') }
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          & $iscc "/DAppVersion=${{ github.ref_name }}" installer.iss
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
-          Compress-Archive -Path dist\Rebecca -DestinationPath Rebecca-windows-portable.zip
+          if (-not (Test-Path $iscc)) {
+            $out = choco install innosetup -y --no-progress 2>&1 | Out-String
+            Write-Host $out
+          }
+          if (-not (Test-Path $iscc)) {
+            $found = (Get-ChildItem "C:\Program Files*","C:\ProgramData\chocolatey\lib" -Recurse -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 3 | ForEach-Object FullName) -join "; "
+            Write-Host "::error title=Inno Setup not found::$(Flat "choco: $out | found: $found")"
+            exit 1
+          }
+      - name: Build installer
+        shell: pwsh
+        run: |
+          function Flat($t) { ($t -replace '%','%25' -replace "`r",'' -replace "`n",'%0A') }
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $out = & $iscc "/DAppVersion=${{ github.ref_name }}" installer.iss 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error title=ISCC failed ($LASTEXITCODE)::$(Flat $out)"
+            exit 1
+          }
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\Rebecca -DestinationPath Rebecca-windows-portable.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Rebecca-windows
