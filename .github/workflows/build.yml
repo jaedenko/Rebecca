@@ -1,0 +1,87 @@
+name: Build Rebecca
+
+on:
+  workflow_dispatch:        # Actions tab -> Build Rebecca -> Run workflow
+  push:
+    tags: ["v*"]            # git tag v1.0.0 && git push origin v1.0.0  -> also publishes a Release
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Pre-download the pose model so it gets bundled into the app
+        run: python -c "import mediapipe as mp; mp.solutions.pose.Pose(model_complexity=0).close(); mp.solutions.hands.Hands(model_complexity=1).close()"
+      - name: Build Rebecca.exe
+        run: pyinstaller --noconfirm --windowed --name Rebecca --icon assets/rebecca.ico --collect-all mediapipe --hidden-import pystray._win32 --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 rebecca_tray.py
+      - name: Self-test the packaged app (no camera needed)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\Rebecca\Rebecca.exe" -ArgumentList "--selftest" -Wait -PassThru
+          if (Test-Path "$env:TEMP\rebecca-selftest.log") { Get-Content "$env:TEMP\rebecca-selftest.log" }
+          if ($p.ExitCode -ne 0) { throw "Self-test failed (exit code $($p.ExitCode))" }
+      - name: Build installer + portable zip
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=${{ github.ref_name }}" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          Compress-Archive -Path dist\Rebecca -DestinationPath Rebecca-windows-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rebecca-windows
+          path: |
+            installer_out/RebeccaSetup.exe
+            Rebecca-windows-portable.zip
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            installer_out/RebeccaSetup.exe
+            Rebecca-windows-portable.zip
+
+  macos:                    # experimental: unsigned, untested on real hardware
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+          python -c "import mediapipe as mp; mp.solutions.pose.Pose(model_complexity=0).close(); mp.solutions.hands.Hands(model_complexity=1).close()"
+      - name: Build Rebecca.app
+        run: |
+          pyinstaller --noconfirm --windowed --name Rebecca --collect-all mediapipe --hidden-import pystray._darwin rebecca_tray.py
+          plutil -replace NSCameraUsageDescription -string "Rebecca watches your hands to move CAD views." dist/Rebecca.app/Contents/Info.plist
+          plutil -replace LSUIElement -bool true dist/Rebecca.app/Contents/Info.plist
+          codesign --force --deep -s - dist/Rebecca.app
+      - name: Self-test
+        run: |
+          dist/Rebecca.app/Contents/MacOS/Rebecca --selftest
+      - name: Make .dmg
+        run: hdiutil create -volname Rebecca -srcfolder dist/Rebecca.app -ov -format UDZO Rebecca-macOS.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rebecca-macos
+          path: Rebecca-macOS.dmg
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Rebecca-macOS.dmg
