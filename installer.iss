@@ -38,4 +38,4 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\Rebecca.exe"; Description: "Start Rebecca now"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-Type: files; Name: "{userprofile}\.rebecca.log"
+Type: files; Name: "{%USERPROFILE}\.rebecca.log"
