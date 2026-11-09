@@ -72,7 +72,7 @@ PINCH_ON, PINCH_OFF = 0.30, 0.50
 SWITCH_FRAMES = 3
 DEADZONE = 0.0006
 CYAN, DIM = (255, 220, 0), (140, 110, 0)  # BGR
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 
 CONFIG_PATH = Path.home() / ".rebecca.json"
 DEFAULTS = {"camera": 0, "app": "fusion360", "auto_app": True, "hotkey": "<ctrl>+<alt>+r",

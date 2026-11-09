@@ -85,7 +85,7 @@ footer{padding:40px 0 56px;border-top:1px solid var(--line);color:var(--dim);fon
       <a class="btn" id="hero-dl" href="https://github.com/jaedenko/Rebecca/releases/latest/download/RebeccaSetup.exe">Download for Windows</a>
       <a class="btn alt" href="/try">Try it in your browser</a>
     </div>
-    <p class="small">Free and open source. Windows 10 and 11 are supported; macOS is experimental.</p>
+    <p class="small">Version 1.0. Free and open source. Windows 10 and 11 are supported; macOS is experimental.</p>
   </div>
   <div class="stage" aria-label="A cube being orbited, panned, zoomed and twisted by hand gestures">
     <div class="cube"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i></div>
@@ -121,7 +121,7 @@ footer{padding:40px 0 56px;border-top:1px solid var(--line);color:var(--dim);fon
 
 <section id="download">
   <h2>Download Rebecca</h2>
-  <p>The current version is on GitHub. Run the installer, then look for the ring icon in your system tray.</p>
+  <p id="ver">Rebecca 1.0 is out. <a href="https://github.com/jaedenko/Rebecca/releases/latest">Read the release notes</a>. Run the installer, then look for the ring icon in your system tray.</p>
   <div class="dls">
     <a class="dl rec" data-os="win" href="https://github.com/jaedenko/Rebecca/releases/latest/download/RebeccaSetup.exe"><b>Windows installer</b><em>RebeccaSetup.exe</em><span>Recommended. No admin rights needed. About 190 MB.</span></a>
     <a class="dl" data-os="win" href="https://github.com/jaedenko/Rebecca/releases/latest/download/Rebecca-windows-portable.zip"><b>Windows portable zip</b><em>.zip</em><span>Unzip anywhere and run Rebecca.exe. Nothing is installed.</span></a>
@@ -134,18 +134,27 @@ footer{padding:40px 0 56px;border-top:1px solid var(--line);color:var(--dim);fon
   <h2>Questions</h2>
   <details><summary>Does Rebecca record or upload my video?</summary><p>No. Video is processed on your computer and never saved or sent anywhere. The camera is on only while a session is running, and Rebecca has no accounts or analytics. It contacts the internet only if you click "Check for updates".</p></details>
   <details><summary>What do I need?</summary><p>A webcam and Windows 10 or 11. Good, even light on your hands helps more than a better camera.</p></details>
-  <details><summary>How do I change the hotkey, speed or camera?</summary><p>Right-click the tray icon. Hotkey, camera, speed, zoom direction, the on-screen indicator, sounds and start-at-login are all in the menu.</p></details>
+  <details><summary>How do I change the hotkey, speed or camera?</summary><p>Right-click the tray icon. Hotkey, camera, speed, zoom direction, gesture calibration, the on-screen indicator, sounds and start-at-login are all in the menu.</p></details>
+  <details><summary>Pinches trigger too easily, or not enough</summary><p>Choose <strong>Calibrate gestures</strong> in the tray menu. Rebecca asks you to hold your hand open and then pinch, and fits the trigger to your hand and camera.</p></details>
+  <details><summary>Something broke</summary><p>Choose <strong>Report a problem</strong> in the tray menu. It opens a GitHub issue with your version and settings filled in.</p></details>
   <details><summary>The camera won't open</summary><p>Another app, such as Zoom, Teams or a browser tab, is probably using it. Close that app, or pick a different camera from the tray menu.</p></details>
   <details><summary>Can I try it without installing?</summary><p>Yes. <a href="/try">The browser version</a> runs the same gestures on a sample part. Your video stays in the tab.</p></details>
   <details><summary>Why "Rebecca"?</summary><p>It stands for Really Exciting Borderline Ecstatic CAD Control Articulator.</p></details>
 </section>
-<footer>Rebecca is free software under the MIT license. <a href="https://github.com/jaedenko/Rebecca">Source and issues on GitHub</a>.</footer>
+<footer>Rebecca is free software under the MIT license. <a href="https://github.com/jaedenko/Rebecca">Source and issues on GitHub</a>. <a href="/brand/rebecca-icon.png">Logo</a> (<a href="/brand/rebecca-icon.svg">SVG</a>) for sharing.</footer>
 </div>
 <script>
 // highlight the download that matches your computer
 const mac=/Mac/i.test(navigator.platform||navigator.userAgent);
 if(mac){const b=document.getElementById("hero-dl");b.textContent="Download for macOS (experimental)";b.href="https://github.com/jaedenko/Rebecca/releases/latest/download/Rebecca-macOS.dmg";
 document.querySelectorAll(".dl").forEach(a=>a.classList.toggle("rec",a.dataset.os==="mac"))}
+// show the real latest version and date
+fetch("https://api.github.com/repos/jaedenko/Rebecca/releases/latest").then(r=>r.ok?r.json():null).then(d=>{
+  if(!d)return;const el=document.getElementById("ver");el.textContent="";
+  const b=document.createElement("strong");b.textContent=d.tag_name;
+  const a=document.createElement("a");a.href=d.html_url;a.textContent="Release notes";
+  el.append("Latest version: ",b,", released "+new Date(d.published_at).toLocaleDateString(undefined,{year:"numeric",month:"long",day:"numeric"})+". ",a,". Run the installer, then look for the ring icon in your system tray.");
+}).catch(()=>{});
 </script>
 </body>
 </html>
