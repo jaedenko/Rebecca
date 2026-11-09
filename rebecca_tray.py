@@ -5,11 +5,13 @@ the hotkey (default Ctrl+Alt+R) over your CAD viewport. Everything is in the tra
 """
 import argparse
 import os
+import platform
 import socket
 import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import webbrowser
 from pathlib import Path
 
@@ -115,6 +117,7 @@ class TrayApp:
         self.cameras = []
         self.hk = None
         self.quitting = False
+        self.calibrating = False
         self.args = argparse.Namespace(dry_run=False, sensitivity=1800, zoom_gain=30,
                                        invert_zoom=False, twist_gain=600, no_save=False)
         self.overlay = Overlay()
@@ -180,7 +183,9 @@ class TrayApp:
     # ----- session worker + hotkey ------------------------------------------
     def worker(self):
         while not self.quitting:
-            if self.active.is_set():
+            if self.active.is_set() and self.calibrating:
+                self.active.clear()   # the camera is busy with calibration
+            elif self.active.is_set():
                 try:
                     R.run_session(self.cfg, self.args, self.active, on_status=self.on_status)
                 except Exception as e:
@@ -255,6 +260,31 @@ class TrayApp:
             else:
                 self.notify(f"You're up to date (Rebecca {R.__version__}).")
         threading.Thread(target=work, daemon=True).start()
+
+    def calibrate(self):
+        if self.active.is_set():
+            return self.notify("Stop Rebecca first, then calibrate.")
+
+        def work():
+            self.calibrating = True
+            try:
+                ok, msg = R.calibrate(self.cfg, lambda text: self.overlay.show(text, "#00dcff"))
+            finally:
+                self.calibrating = False
+            if ok:
+                self.save()
+            R.cue("start" if ok else "stop")
+            self.overlay.show(msg, "#3dff9c" if ok else "#ff8080")
+            self.overlay.hide(after=3.0)
+            self.notify(msg)
+        threading.Thread(target=work, daemon=True).start()
+
+    def report_problem(self):
+        body = ("**What happened?**\n\n\n**Details (filled in automatically)**\n"
+                f"- Rebecca {R.__version__}\n- {platform.platform()}\n"
+                f"- Camera {self.cfg['camera']}, app {'auto' if self.cfg['auto_app'] else self.cfg['app']}\n\n"
+                "If it helps, attach `.rebecca.log` from your user folder.")
+        webbrowser.open("https://github.com/jaedenko/Rebecca/issues/new?" + urllib.parse.urlencode({"body": body}))
 
     def set_mode(self, mode):
         self.cfg["mode"] = mode
@@ -369,6 +399,7 @@ class TrayApp:
             I("Zoom speed", M(lambda: self.choice_items("zoom_gain", ZOOMS))),
             I("Reverse zoom direction", lambda icon, item: self.flip("invert_zoom"),
               checked=lambda item: bool(self.cfg.get("invert_zoom"))),
+            I("Calibrate gestures...", lambda icon, item: self.calibrate()),
             M.SEPARATOR,
             I("Show camera preview", lambda icon, item: self.flip("preview"),
               checked=lambda item: bool(self.cfg["preview"])),
@@ -391,6 +422,7 @@ class TrayApp:
             M.SEPARATOR,
             I(lambda item: f"Rebecca {R.__version__}", None, enabled=False),
             I("Check for updates...", lambda icon, item: self.check_updates()),
+            I("Report a problem...", lambda icon, item: self.report_problem()),
             I("Website and help", lambda icon, item: webbrowser.open(SITE_URL)),
             I("Quit Rebecca", lambda icon, item: self.quit()),
         )
@@ -434,6 +466,8 @@ def selftest():
     check("tkinter + Tcl (on-screen indicator)", lambda: __import__("tkinter").Tcl().eval("info patchlevel"))
     check("mouse/keyboard control", lambda: (R.MouseController(), R.KeyboardController()) and "ok")
     check("version compare", lambda: rebecca_update.is_newer("v0.3.0", R.__version__))
+    check("calibration math", lambda: R.thresholds_from(0.9, 0.1))
+    check("admin-window check", lambda: R.foreground_is_elevated() in (True, False))
     check("hotkey parse", lambda: R.keyboard.HotKey.parse("<ctrl>+<alt>+r"))
     check("active window", lambda: repr(R.foreground_title())[:40])
     out = "\n".join(lines)

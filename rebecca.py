@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import statistics
 import subprocess
 import sys
 import threading
@@ -71,12 +72,13 @@ PINCH_ON, PINCH_OFF = 0.30, 0.50
 SWITCH_FRAMES = 3
 DEADZONE = 0.0006
 CYAN, DIM = (255, 220, 0), (140, 110, 0)  # BGR
-__version__ = "0.2.0"
+__version__ = "0.9.0"
 
 CONFIG_PATH = Path.home() / ".rebecca.json"
 DEFAULTS = {"camera": 0, "app": "fusion360", "auto_app": True, "hotkey": "<ctrl>+<alt>+r",
             "mode": "toggle", "idle_timeout": 45, "preview": False, "sounds": True, "arm": False, "pill": True,
-            "sensitivity": 1800, "zoom_gain": 30, "invert_zoom": False, "twist_gain": 600}
+            "sensitivity": 1800, "zoom_gain": 30, "invert_zoom": False, "twist_gain": 600,
+            "pinch_on": PINCH_ON, "pinch_off": PINCH_OFF}
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +145,35 @@ def detect_app(title):
         if needle in t:
             return name
     return None
+
+
+def foreground_is_elevated():
+    """Windows only: True if the active window belongs to an administrator process we can't send input to."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u, k, a = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.advapi32
+        if ctypes.windll.shell32.IsUserAnAdmin():
+            return False                                  # we're elevated too: nothing is blocked
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(u.GetForegroundWindow(), ctypes.byref(pid))
+        h = k.OpenProcess(0x1000, False, pid.value)       # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        tok = wintypes.HANDLE()
+        ok = a.OpenProcessToken(h, 0x0008, ctypes.byref(tok))   # TOKEN_QUERY
+        k.CloseHandle(h)
+        if not ok:
+            return ctypes.GetLastError() == 5             # access denied = an elevated target
+        elev = wintypes.DWORD()
+        n = wintypes.DWORD()
+        a.GetTokenInformation(tok, 20, ctypes.byref(elev), ctypes.sizeof(elev), ctypes.byref(n))  # TokenElevation
+        k.CloseHandle(tok)
+        return bool(elev.value)
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +260,7 @@ def dist(a, b):
 
 
 class HandInfo:
-    def __init__(self, lm, was_pinching):
+    def __init__(self, lm, was_pinching, on=PINCH_ON, off=PINCH_OFF):
         size = dist(lm[0], lm[9]) or 1e-6
         self.pinch_ratio = dist(lm[4], lm[8]) / size
         curled = sum(
@@ -237,7 +268,7 @@ class HandInfo:
             for t, p in ((8, 6), (12, 10), (16, 14), (20, 18))
         )
         self.fist = curled >= 4
-        thresh = PINCH_OFF if was_pinching else PINCH_ON
+        thresh = off if was_pinching else on
         self.pinch = (not self.fist) and self.pinch_ratio < thresh
         pts = [lm[i] for i in (0, 5, 9, 13, 17)]
         self.x = sum(p.x for p in pts) / 5
@@ -246,6 +277,30 @@ class HandInfo:
 
 
 _DRIVERS = weakref.WeakSet()
+
+
+class OneEuro:
+    """One Euro filter: steady when your hand is still, quick to follow when it moves (less jitter AND less lag)."""
+
+    def __init__(self, min_cutoff=1.5, beta=6.0, d_cutoff=1.0):
+        self.min_cutoff, self.beta, self.d_cutoff = min_cutoff, beta, d_cutoff
+        self.x = self.dx = self.t = None
+
+    @staticmethod
+    def _alpha(cutoff, dt):
+        return 1.0 / (1.0 + (1.0 / (2 * math.pi * cutoff)) / dt)
+
+    def __call__(self, x, t):
+        if self.x is None:
+            self.x, self.dx, self.t = x, 0.0, t
+            return x
+        dt = max(t - self.t, 1e-3)
+        a_d = self._alpha(self.d_cutoff, dt)
+        self.dx = a_d * ((x - self.x) / dt) + (1 - a_d) * self.dx
+        a = self._alpha(self.min_cutoff + self.beta * abs(self.dx), dt)
+        self.x = a * x + (1 - a) * self.x
+        self.t = t
+        return self.x
 
 
 class CadDriver:
@@ -267,6 +322,8 @@ class CadDriver:
         self.alast = None
         self.src = None
         self.home = None   # cursor position before a drag, restored afterwards
+        self.clock = time.monotonic
+        self.fx = self.fy = None
         self.held = None   # (button, mods) currently pressed
         _DRIVERS.add(self)
 
@@ -350,11 +407,9 @@ class CadDriver:
                 self.src, self.last, self.smooth = ref.src, None, None
             pos = (ref.px, ref.py)
             if self.smooth is None:
-                self.smooth = pos
-            else:
-                a = 0.5
-                self.smooth = (self.smooth[0] + a * (pos[0] - self.smooth[0]),
-                               self.smooth[1] + a * (pos[1] - self.smooth[1]))
+                self.fx, self.fy = OneEuro(), OneEuro()
+            t = self.clock()
+            self.smooth = (self.fx(pos[0], t), self.fy(pos[1], t))
             if self.last is not None:
                 dx = self.smooth[0] - self.last[0]
                 dy = self.smooth[1] - self.last[1]
@@ -414,6 +469,49 @@ def close_models():
         except Exception:
             pass
     _MODELS.clear()
+
+
+def thresholds_from(open_ratio, pinch_ratio):
+    """Personal pinch thresholds from a measured open-hand and pinched-hand ratio; None if they look too alike."""
+    gap = open_ratio - pinch_ratio
+    if gap < 0.25:
+        return None
+    on = min(0.45, max(0.12, pinch_ratio + 0.35 * gap))
+    off = min(0.8, max(on + 0.1, pinch_ratio + 0.6 * gap))
+    return round(on, 3), round(off, 3)
+
+
+def calibrate(cfg, prompt, seconds=3.0, grace=1.0):
+    """Two guided steps (open hand, then pinch) that fit the pinch thresholds to your hand and camera.
+    prompt(text) shows the instruction. Returns (ok, message); on success cfg is updated (caller saves it)."""
+    cap = open_camera(cfg["camera"])
+    if cap is None:
+        return False, "Camera won't open. Close other apps that use it and try again."
+    hands = get_hands()
+
+    def measure(text):
+        prompt(text)
+        samples, t0 = [], time.time()
+        while time.time() - t0 < grace + seconds:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            res = hands.process(cv2.cvtColor(cv2.flip(frame, 1), cv2.COLOR_BGR2RGB))
+            if res.multi_hand_landmarks and time.time() - t0 > grace:
+                samples.append(HandInfo(res.multi_hand_landmarks[0].landmark, False).pinch_ratio)
+        return samples
+    try:
+        opens = measure("Hold your hand open, fingers apart")
+        pinches = measure("Now pinch your thumb and index finger together") if len(opens) >= 10 else []
+    finally:
+        cap.release()
+    if len(opens) < 10 or len(pinches) < 10:
+        return False, "Couldn't see your hand clearly. Try better light and keep it in view."
+    t = thresholds_from(statistics.median(opens), statistics.median(pinches))
+    if t is None:
+        return False, "The open and pinched hand looked too alike. Try again with a clear pinch."
+    cfg["pinch_on"], cfg["pinch_off"] = t
+    return True, f"Calibrated. Pinch trigger set to {t[0]:.2f}."
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +589,7 @@ def run_session(cfg, args, active, on_status=None):
     pinch_state, paused = {}, False
     last_seen = last_detect = time.time()
     last_mode = None
+    warned_admin = False
     app_names = sorted(PROFILES)
 
     print(f"[rebecca] LIVE  camera {cfg['camera']}  profile {effective}")
@@ -513,7 +612,7 @@ def run_session(cfg, args, active, on_status=None):
             if res.multi_hand_landmarks:
                 for lm, hd in zip(res.multi_hand_landmarks, res.multi_handedness):
                     label = hd.classification[0].label
-                    info = HandInfo(lm.landmark, pinch_state.get(label, False))
+                    info = HandInfo(lm.landmark, pinch_state.get(label, False), cfg["pinch_on"], cfg["pinch_off"])
                     pinch_state[label] = info.pinch
                     infos.append(info)
                     lms.append(lm)
@@ -549,11 +648,12 @@ def run_session(cfg, args, active, on_status=None):
             # follow the window you're looking at (Fusion vs Onshape vs ...), about once a second
             if now - last_detect > 1.0:
                 last_detect = now
-                wanted = effective
-                if cfg.get("auto_app", True):
-                    wanted = detect_app(foreground_title()) or effective
-                else:
-                    wanted = cfg["app"]
+                found = detect_app(foreground_title())
+                if found and not warned_admin and foreground_is_elevated():
+                    warned_admin = True
+                    emit(info="That window runs as administrator, so Windows won't let Rebecca control it. "
+                              "Run Rebecca as administrator too.")
+                wanted = (found or effective) if cfg.get("auto_app", True) else cfg["app"]
                 if wanted != effective:
                     driver.release()
                     effective = wanted

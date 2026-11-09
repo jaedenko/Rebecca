@@ -1,0 +1,25 @@
+name: Bug report
+description: Something didn't work the way you expected
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Rebecca version
+      description: Shown in the tray menu, for example 0.9.0
+  - type: input
+    id: setup
+    attributes:
+      label: Windows version, webcam, and CAD program
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The last lines of `.rebecca.log` in your user folder (open it with Notepad). Remove anything private.
+      render: text

@@ -31,11 +31,24 @@ def hand(x, y, pinch=False, fist=False):
     return h
 
 
+class Clock:   # 30 frames per second, deterministic
+    t = 0.0
+
+    def __call__(self):
+        self.t += 1 / 30
+        return self.t
+
+
 @pytest.fixture
 def make_driver(monkeypatch):
     monkeypatch.setattr(R, "MouseController", FakeMouse)
     monkeypatch.setattr(R, "KeyboardController", FakeKeys)
-    return lambda app, invert=False: R.CadDriver(R.PROFILES[app], False, 1800, 30, invert)
+
+    def make(app, invert=False):
+        d = R.CadDriver(R.PROFILES[app], False, 1800, 30, invert)
+        d.clock = Clock()
+        return d
+    return make
 
 
 def orbit(d, frames=10):
@@ -125,3 +138,29 @@ def test_version_compare():
 
 def test_defaults_keep_camera_window_hidden():
     assert R.DEFAULTS["preview"] is False and R.DEFAULTS["pill"] is True
+
+
+def test_one_euro_is_steady_when_still_and_follows_fast_moves():
+    import random
+    random.seed(1)
+    f, t, out = R.OneEuro(), 0.0, []
+    for _ in range(90):                       # hand held still with sensor jitter
+        t += 1 / 30
+        out.append(f(0.5 + random.uniform(-0.004, 0.004), t))
+    assert max(out[30:]) - min(out[30:]) < 0.004
+    for i in range(1, 16):                    # then a quick sweep: output must not lag far behind
+        t += 1 / 30
+        last = f(0.5 + 0.03 * i, t)
+    assert 0.95 - last < 0.12
+
+
+def test_calibration_thresholds():
+    assert R.thresholds_from(0.9, 0.1) == (0.38, 0.58)
+    assert R.thresholds_from(0.4, 0.3) is None          # open and pinched look too alike
+    on, off = R.thresholds_from(1.5, 0.02)
+    assert on <= 0.45 and off >= on + 0.1
+
+
+def test_admin_check_is_false_off_windows(monkeypatch):
+    monkeypatch.setattr(R.sys, "platform", "linux")
+    assert R.foreground_is_elevated() is False

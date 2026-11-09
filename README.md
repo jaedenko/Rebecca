@@ -43,9 +43,13 @@ automatically (a browser tab with "Onshape" in its title -> Onshape, and so on).
 
 ## Tray menu
 Status line - Start/stop now (left-click the icon) - Camera - App to control - Speed - Zoom speed -
-Reverse zoom direction - Show camera preview - Show on-screen indicator - Sound cues -
+Reverse zoom direction - Calibrate gestures - Show camera preview - Show on-screen indicator - Sound cues -
 Arm-relative tracking (experimental) - Hotkey (change it, or switch to hold-to-use) - Start at login -
-Check for updates - Website and help - Quit. Settings are saved in `~/.rebecca.json`; a log is in `~/.rebecca.log`.
+Check for updates - Report a problem - Website and help - Quit. Settings are saved in `~/.rebecca.json`; a log is in `~/.rebecca.log`.
+
+## Calibrating
+If pinches trigger too easily or not enough, choose **Calibrate gestures** in the tray menu. Rebecca asks you to hold
+your hand open, then pinch, and fits the pinch trigger to your hand and camera.
 
 ## Privacy
 Video is processed on your computer and is never saved or sent anywhere. The camera is on only while a
@@ -72,7 +76,7 @@ SPACE simulates the hotkey, ESC stops the camera.
 `pip install -r requirements.txt pytest && pytest` runs the tests (they also run in CI before every build).
 
 ## License
-MIT, see `LICENSE`. Bundled libraries are listed in `THIRD_PARTY_NOTICES.md`.
+MIT, see `LICENSE`. Bundled libraries are listed in `THIRD_PARTY_NOTICES.md`. Signing policy: `CODE_SIGNING_POLICY.md`.
 
 ## Command line (debugging)
 `python rebecca.py --list-cameras | --setup | --now --dry-run --preview | --mode hold --hotkey "<f8>"`
